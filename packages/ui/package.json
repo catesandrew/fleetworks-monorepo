@@ -3,6 +3,11 @@
   "version": "0.1.1",
   "description": "Shared design tokens + chrome (app switcher, logo lockup, footer) for the Fleetworks suite.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/catesandrew/fleetworks-monorepo",
+    "directory": "packages/ui"
+  },
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",

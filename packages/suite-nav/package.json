@@ -3,6 +3,11 @@
   "version": "0.1.0",
   "description": "Canonical registry of apps in the Fleetworks suite — zero dependencies, zero React.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/catesandrew/fleetworks-monorepo",
+    "directory": "packages/suite-nav"
+  },
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
