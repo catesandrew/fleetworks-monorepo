@@ -1,0 +1,23 @@
+{
+  "name": "fleetworks-monorepo",
+  "private": true,
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "typecheck": "turbo run typecheck",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release": "turbo run build --filter=./packages/* && changeset publish"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.29.0",
+    "turbo": "^2.5.0",
+    "typescript": "^5.9.0"
+  }
+}

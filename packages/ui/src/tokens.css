@@ -1,0 +1,24 @@
+:root {
+  --fw-color-ink: #0b0f14;
+  --fw-color-paper: #ffffff;
+  --fw-color-muted: #6b7280;
+  --fw-color-border: #e5e7eb;
+  --fw-color-surface: #f9fafb;
+
+  --fw-font-sans:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --fw-font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', monospace;
+
+  --fw-radius-sm: 6px;
+  --fw-radius-md: 10px;
+  --fw-radius-lg: 16px;
+
+  --fw-space-1: 4px;
+  --fw-space-2: 8px;
+  --fw-space-3: 12px;
+  --fw-space-4: 16px;
+  --fw-space-5: 24px;
+  --fw-space-6: 32px;
+  --fw-space-7: 48px;
+  --fw-space-8: 64px;
+}

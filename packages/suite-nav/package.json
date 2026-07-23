@@ -1,0 +1,31 @@
+{
+  "name": "@fleet-works/suite-nav",
+  "version": "0.1.0",
+  "description": "Canonical registry of apps in the Fleetworks suite — zero dependencies, zero React.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": ["dist"],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "echo \"no lint configured yet\""
+  },
+  "devDependencies": {
+    "tsup": "^8.3.0",
+    "typescript": "^5.9.0"
+  }
+}
