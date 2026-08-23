@@ -1,0 +1,212 @@
+name: fleetworks-zitadel
+
+# Local Zitadel instance for the Fleetworks suite (chorus, helmsman, rolodex,
+# warden, yellow-pages). This is the upstream Zitadel Docker Compose stack
+# (Traefik -> zitadel-api + zitadel-login -> Postgres), pinned to a specific
+# release and extended with FIRSTINSTANCE_* bootstrap vars so the whole thing
+# comes up ready-to-seed with zero manual console clicks.
+#
+# Upstream reference: https://zitadel.com/docs/self-hosting/deploy/compose
+# (raw file: https://raw.githubusercontent.com/zitadel/zitadel/main/deploy/compose/docker-compose.yml)
+#
+# OrbStack runs this with plain `docker compose up -d` — no special syntax.
+
+services:
+  proxy:
+    image: ${TRAEFIK_IMAGE}
+    restart: unless-stopped
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=fleetworks-zitadel
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --api.dashboard=${TRAEFIK_DASHBOARD_ENABLED}
+      - --api.insecure=false
+      - --ping=true
+      - --ping.entrypoint=web
+      - --log.level=${TRAEFIK_LOG_LEVEL}
+      - --accesslog=${TRAEFIK_ACCESSLOG_ENABLED}
+    ports:
+      # Zitadel console/API port. Picked to avoid colliding with the 5 apps'
+      # local ports (helmsman 3025/4025, chorus 3021/4021, warden 3020/4020,
+      # rolodex 3013/4013, yellow-pages 3023/4023).
+      - ${PROXY_HTTP_PUBLISHED_PORT}:80
+    networks:
+      - fleetworks-zitadel
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      zitadel-api:
+        condition: service_healthy
+      zitadel-login:
+        condition: service_healthy
+
+  zitadel-api:
+    image: ghcr.io/zitadel/zitadel:${ZITADEL_VERSION}
+    restart: unless-stopped
+    user: "0"
+    command: start-from-init --masterkey "${ZITADEL_MASTERKEY}"
+    environment:
+      ZITADEL_PORT: 8080
+      ZITADEL_EXTERNALDOMAIN: ${ZITADEL_DOMAIN}
+      ZITADEL_EXTERNALPORT: ${ZITADEL_EXTERNALPORT}
+      ZITADEL_EXTERNALSECURE: ${ZITADEL_EXTERNALSECURE}
+      ZITADEL_TLS_ENABLED: false
+
+      ZITADEL_DATABASE_POSTGRES_DSN: ${ZITADEL_DATABASE_POSTGRES_DSN}
+
+      # --- Login UI's own machine client (upstream default, required for the
+      # bundled Next.js Login v2 UI to talk back to the API) ---
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORDCHANGEREQUIRED: false
+      ZITADEL_FIRSTINSTANCE_LOGINCLIENTPATPATH: /zitadel/bootstrap/login-client.pat
+      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_MACHINE_USERNAME: login-client
+      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_MACHINE_NAME: Automatically Initialized IAM_LOGIN_CLIENT
+      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_PAT_EXPIRATIONDATE: ${LOGIN_CLIENT_PAT_EXPIRATION}
+
+      # --- Fleetworks bootstrap: org name, human admin, seed-bot machine user ---
+      ZITADEL_FIRSTINSTANCE_ORG_NAME: ${FLEETWORKS_ORG_NAME}
+
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_USERNAME: ${FLEETWORKS_ADMIN_EMAIL}
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_FIRSTNAME: ${FLEETWORKS_ADMIN_FIRSTNAME}
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_LASTNAME: ${FLEETWORKS_ADMIN_LASTNAME}
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_EMAIL_ADDRESS: ${FLEETWORKS_ADMIN_EMAIL}
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_EMAIL_VERIFIED: true
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD: ${FLEETWORKS_ADMIN_PASSWORD}
+
+      # Service account used by the seed script (scripts/seed.ts) to drive the
+      # Management/Resource APIs without ever touching the Console UI.
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_USERNAME: ${FLEETWORKS_SEED_BOT_USERNAME}
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_NAME: ${FLEETWORKS_SEED_BOT_NAME}
+      # 1 = JSON machine key (the only currently supported type). Written to
+      # MACHINEKEYPATH below; readable via:
+      #   docker compose exec zitadel-api cat /zitadel/bootstrap/fleetworks-seed-bot-key.json
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINEKEY_TYPE: 1
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINEKEY_EXPIRATIONDATE: ${FLEETWORKS_SEED_BOT_EXPIRATION}
+      # A ready-to-use Personal Access Token for the same machine user. This is
+      # what scripts/seed.ts actually authenticates with (Bearer <PAT>) — far
+      # simpler than signing a JWT profile assertion for a one-shot local script.
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_PAT_EXPIRATIONDATE: ${FLEETWORKS_SEED_BOT_EXPIRATION}
+
+      ZITADEL_FIRSTINSTANCE_MACHINEKEYPATH: /zitadel/bootstrap/fleetworks-seed-bot-key.json
+      ZITADEL_FIRSTINSTANCE_PATPATH: /zitadel/bootstrap/fleetworks-seed-bot.pat
+
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED: true
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_BASEURI: ${ZITADEL_PUBLIC_SCHEME}://${ZITADEL_DOMAIN}:${ZITADEL_EXTERNALPORT}/ui/v2/login/
+      ZITADEL_OIDC_DEFAULTLOGINURLV2: ${ZITADEL_PUBLIC_SCHEME}://${ZITADEL_DOMAIN}:${ZITADEL_EXTERNALPORT}/ui/v2/login/login?authRequest=
+      ZITADEL_OIDC_DEFAULTLOGOUTURLV2: ${ZITADEL_PUBLIC_SCHEME}://${ZITADEL_DOMAIN}:${ZITADEL_EXTERNALPORT}/ui/v2/login/logout?post_logout_redirect=
+      ZITADEL_SAML_DEFAULTLOGINURLV2: ${ZITADEL_PUBLIC_SCHEME}://${ZITADEL_DOMAIN}:${ZITADEL_EXTERNALPORT}/ui/v2/login/login?samlRequest=
+
+      ZITADEL_LOGSTORE_ACCESS_STDOUT_ENABLED: ${ZITADEL_ACCESS_LOG_STDOUT_ENABLED}
+
+    healthcheck:
+      test:
+        - CMD
+        - /app/zitadel
+        - ready
+      interval: 10s
+      timeout: 30s
+      retries: 12
+      start_period: 20s
+    volumes:
+      - zitadel-bootstrap:/zitadel/bootstrap:rw
+    networks:
+      - fleetworks-zitadel
+    depends_on:
+      postgres:
+        condition: service_healthy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=fleetworks-zitadel
+
+      - traefik.http.services.zitadel-api.loadbalancer.server.port=8080
+      - traefik.http.services.zitadel-api.loadbalancer.server.scheme=h2c
+
+      - traefik.http.middlewares.zitadel-strip-api.stripprefix.prefixes=/api
+      - traefik.http.middlewares.zitadel-strip-api.stripprefix.forceSlash=false
+
+      # Note: no dedicated gRPC router needed. All gRPC and Connect-RPC traffic
+      # is handled by the catch-all router below since the backend already uses h2c.
+
+      - traefik.http.routers.zitadel-api-alias-web.rule=Host(`${ZITADEL_DOMAIN}`) && PathPrefix(`/api`)
+      - traefik.http.routers.zitadel-api-alias-web.entrypoints=web
+      - traefik.http.routers.zitadel-api-alias-web.middlewares=zitadel-strip-api
+      - traefik.http.routers.zitadel-api-alias-web.service=zitadel-api
+      - traefik.http.routers.zitadel-api-alias-web.priority=200
+
+      - traefik.http.routers.zitadel-canonical-web.rule=Host(`${ZITADEL_DOMAIN}`) && !PathPrefix(`/ui/v2/login`) && !PathPrefix(`/api`) && !Path(`/`)
+      - traefik.http.routers.zitadel-canonical-web.entrypoints=web
+      - traefik.http.routers.zitadel-canonical-web.service=zitadel-api
+      - traefik.http.routers.zitadel-canonical-web.priority=100
+
+  zitadel-login:
+    image: ghcr.io/zitadel/zitadel-login:${ZITADEL_VERSION}
+    restart: unless-stopped
+    user: "0"
+    environment:
+      ZITADEL_API_URL: http://zitadel-api:8080
+      NEXT_PUBLIC_BASE_PATH: /ui/v2/login
+      ZITADEL_SERVICE_USER_TOKEN_FILE: /zitadel/bootstrap/login-client.pat
+      CUSTOM_REQUEST_HEADERS: Host:${ZITADEL_DOMAIN},X-Forwarded-Proto:${ZITADEL_PUBLIC_SCHEME}
+    healthcheck:
+      test:
+        - CMD
+        - /bin/sh
+        - -c
+        - node /app/healthcheck.mjs http://localhost:3000/ui/v2/login/healthy
+      interval: 10s
+      timeout: 30s
+      retries: 12
+      start_period: 20s
+    volumes:
+      - zitadel-bootstrap:/zitadel/bootstrap:ro
+    networks:
+      - fleetworks-zitadel
+    depends_on:
+      zitadel-api:
+        condition: service_healthy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=fleetworks-zitadel
+      - traefik.http.services.zitadel-login.loadbalancer.server.port=3000
+
+      - traefik.http.middlewares.zitadel-root-rewrite.replacepath.path=/ui/v2/login/
+
+      - traefik.http.routers.zitadel-root-web.rule=Host(`${ZITADEL_DOMAIN}`) && Path(`/`)
+      - traefik.http.routers.zitadel-root-web.entrypoints=web
+      - traefik.http.routers.zitadel-root-web.middlewares=zitadel-root-rewrite
+      - traefik.http.routers.zitadel-root-web.service=zitadel-login
+      - traefik.http.routers.zitadel-root-web.priority=400
+
+      - traefik.http.routers.zitadel-login-web.rule=Host(`${ZITADEL_DOMAIN}`) && PathPrefix(`/ui/v2/login`)
+      - traefik.http.routers.zitadel-login-web.entrypoints=web
+      - traefik.http.routers.zitadel-login-web.service=zitadel-login
+      - traefik.http.routers.zitadel-login-web.priority=250
+
+  postgres:
+    image: ${POSTGRES_IMAGE}
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD}
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER}
+      POSTGRES_DB: ${POSTGRES_DB}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -d ${POSTGRES_DB} -U ${POSTGRES_ADMIN_USER}
+      interval: 10s
+      timeout: 30s
+      retries: 10
+      start_period: 20s
+    volumes:
+      - postgres-data:/var/lib/postgresql/data:rw
+    networks:
+      - fleetworks-zitadel
+
+networks:
+  fleetworks-zitadel:
+    name: fleetworks-zitadel
+
+volumes:
+  postgres-data:
+  zitadel-bootstrap:

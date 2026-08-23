@@ -1,0 +1,388 @@
+// Fleetworks Zitadel local seed script.
+//
+// Node >=22 ESM, zero npm dependencies (uses global fetch + node:child_process).
+// Run with: node seed.ts   (from infra/zitadel-local, after `docker compose up -d --wait`)
+//
+// What this does, in order:
+//   1. Reads the seed-bot's Personal Access Token out of the running
+//      zitadel-api container (written there by ZITADEL_FIRSTINSTANCE_PATPATH).
+//   2. Finds the "Fleetworks" org created by FIRSTINSTANCE bootstrap.
+//   3. Creates (or reuses) one Project: "Fleetworks Suite".
+//   4. Creates (or reuses) two project roles: admin, member.
+//   5. Creates (or reuses) 5 OIDC applications, one per Fleetworks app, each
+//      a public Auth-Code+PKCE client scoped to that app's own localhost port.
+//   6. Creates (or reuses) 2 test users and grants them project roles.
+//   7. Writes generated-client-env.md with the per-app env vars.
+//
+// Re-running this script is safe: every resource is looked up by name/key
+// before being created. The one exception is role *grants* on users — those
+// are created best-effort and a 409/already-exists response is treated as
+// success, not re-verified against the requested role set.
+//
+// API notes / deviations from a "textbook" v1 Management API integration:
+//   - Zitadel's v2 "resource" APIs (project/v2, application/v2, user/v2,
+//     authorization/v2, org/v2) are Connect-RPC services. Over plain HTTP
+//     (no grpc/connect client library) they are unary POST endpoints at
+//     POST /<fully.qualified.package>.<Service>/<Method>, JSON in, JSON out,
+//     Bearer auth — no separate REST path scheme like the deprecated v1
+//     Management API (/management/v1/...) uses. That's the URL scheme this
+//     script's `call()` helper builds.
+//   - We authenticate with a PAT (ready-to-use bearer token), not the
+//     machine's JSON key + JWT-profile assertion. Both are bootstrapped by
+//     docker-compose.yml; the PAT needs no crypto/signing to use from a
+//     throwaway script, so it's what `call()` actually sends.
+
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+const BASE_URL = process.env.ZITADEL_BASE_URL ?? "http://localhost:8080";
+const ORG_NAME = process.env.FLEETWORKS_ORG_NAME ?? "Fleetworks";
+const PROJECT_NAME = "Fleetworks Suite";
+const COMPOSE_SERVICE = "zitadel-api";
+const PAT_BOOTSTRAP_PATH = "/zitadel/bootstrap/fleetworks-seed-bot.pat";
+
+const ROLES = [
+  { key: "admin", displayName: "Admin" },
+  { key: "member", displayName: "Member" },
+] as const;
+
+interface AppSpec {
+  key: string;
+  name: string;
+  port: number;
+}
+
+// One client per app — deliberate: NOT one shared client across all 5.
+const APPS: AppSpec[] = [
+  { key: "helmsman", name: "Helmsman", port: 3025 },
+  { key: "chorus", name: "Chorus", port: 3021 },
+  { key: "warden", name: "Warden", port: 3020 },
+  { key: "rolodex", name: "Rolodex", port: 3013 },
+  { key: "yellow-pages", name: "Yellow Pages", port: 3023 },
+];
+
+interface TestUserSpec {
+  username: string;
+  firstName: string;
+  lastName: string;
+  password: string;
+  role: (typeof ROLES)[number]["key"];
+}
+
+const TEST_USERS: TestUserSpec[] = [
+  {
+    username: "test-admin@fleetworks.dev",
+    firstName: "Test",
+    lastName: "Admin",
+    password: "TestAdmin1!",
+    role: "admin",
+  },
+  {
+    username: "test-member@fleetworks.dev",
+    firstName: "Test",
+    lastName: "Member",
+    password: "TestMember1!",
+    role: "member",
+  },
+];
+
+// --- HTTP plumbing ---------------------------------------------------------
+
+class ConnectError extends Error {
+  status: number;
+  body: unknown;
+
+  constructor(status: number, body: unknown, path: string) {
+    super(`${path} -> HTTP ${status}: ${JSON.stringify(body)}`);
+    this.status = status;
+    this.body = body;
+  }
+}
+
+function getPat(): string {
+  // The zitadel-api image ships only the `/app/zitadel` binary — no shell, no
+  // coreutils (`exec sh`/`exec cat` both fail with ENOENT). `docker compose cp`
+  // talks to the container's filesystem directly through the daemon, so it
+  // works regardless of what's installed inside the container.
+  const dir = mkdtempSync(join(tmpdir(), "fleetworks-zitadel-"));
+  const localPath = join(dir, "seed-bot.pat");
+  try {
+    execFileSync(
+      "docker",
+      ["compose", "cp", `${COMPOSE_SERVICE}:${PAT_BOOTSTRAP_PATH}`, localPath],
+      { cwd: __dirname, stdio: ["ignore", "ignore", "inherit"] },
+    );
+    const pat = readFileSync(localPath, "utf8").trim();
+    if (!pat) {
+      throw new Error(`Read an empty PAT from ${PAT_BOOTSTRAP_PATH} inside ${COMPOSE_SERVICE}`);
+    }
+    return pat;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function makeCaller(pat: string) {
+  return async function call<T>(rpcPath: string, body: unknown = {}): Promise<T> {
+    const res = await fetch(`${BASE_URL}/${rpcPath}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${pat}`,
+      },
+      body: JSON.stringify(body),
+    });
+    const text = await res.text();
+    const json = text ? JSON.parse(text) : {};
+    if (!res.ok) {
+      throw new ConnectError(res.status, json, rpcPath);
+    }
+    return json as T;
+  };
+}
+
+type Call = ReturnType<typeof makeCaller>;
+
+function isAlreadyExists(err: unknown): boolean {
+  if (!(err instanceof ConnectError)) return false;
+  if (err.status === 409) return true;
+  const msg = JSON.stringify(err.body).toLowerCase();
+  return msg.includes("already exist") || msg.includes("alreadyexists");
+}
+
+// --- Steps -------------------------------------------------------------
+
+async function findOrgId(call: Call): Promise<string> {
+  const res = await call<{ result?: Array<{ id: string; name: string }> }>(
+    "zitadel.org.v2.OrganizationService/ListOrganizations",
+    {},
+  );
+  const org = res.result?.find((o) => o.name === ORG_NAME);
+  if (!org) {
+    throw new Error(
+      `Organization "${ORG_NAME}" not found. FIRSTINSTANCE bootstrap may not have run — check: docker compose logs zitadel-api`,
+    );
+  }
+  console.log(`[org] "${ORG_NAME}" -> ${org.id}`);
+  return org.id;
+}
+
+async function findOrCreateProject(call: Call, organizationId: string): Promise<string> {
+  const list = await call<{ projects?: Array<{ projectId: string; name: string }> }>(
+    "zitadel.project.v2.ProjectService/ListProjects",
+    {},
+  );
+  const existing = list.projects?.find((p) => p.name === PROJECT_NAME);
+  if (existing) {
+    console.log(`[project] "${PROJECT_NAME}" already exists -> ${existing.projectId}`);
+    return existing.projectId;
+  }
+  const created = await call<{ projectId: string }>(
+    "zitadel.project.v2.ProjectService/CreateProject",
+    { organizationId, name: PROJECT_NAME },
+  );
+  console.log(`[project] created "${PROJECT_NAME}" -> ${created.projectId}`);
+  return created.projectId;
+}
+
+async function ensureRoles(call: Call, projectId: string): Promise<void> {
+  const list = await call<{ projectRoles?: Array<{ key: string }> }>(
+    "zitadel.project.v2.ProjectService/ListProjectRoles",
+    { projectId },
+  );
+  const existingKeys = new Set((list.projectRoles ?? []).map((r) => r.key));
+  for (const role of ROLES) {
+    if (existingKeys.has(role.key)) {
+      console.log(`[role] "${role.key}" already exists`);
+      continue;
+    }
+    await call("zitadel.project.v2.ProjectService/AddProjectRole", {
+      projectId,
+      roleKey: role.key,
+      displayName: role.displayName,
+    });
+    console.log(`[role] created "${role.key}"`);
+  }
+}
+
+interface CreatedApp {
+  key: string;
+  name: string;
+  port: number;
+  clientId: string;
+}
+
+async function findOrCreateApp(call: Call, projectId: string, app: AppSpec): Promise<CreatedApp> {
+  const list = await call<{
+    applications?: Array<{
+      applicationId: string;
+      name: string;
+      oidcConfiguration?: { clientId?: string };
+    }>;
+  }>("zitadel.application.v2.ApplicationService/ListApplications", {
+    filters: [{ projectIdFilter: { projectId } }],
+  });
+  const existing = list.applications?.find((a) => a.name === app.name);
+  if (existing?.oidcConfiguration?.clientId) {
+    console.log(`[app] "${app.name}" already exists -> ${existing.oidcConfiguration.clientId}`);
+    return { key: app.key, name: app.name, port: app.port, clientId: existing.oidcConfiguration.clientId };
+  }
+
+  const redirectUri = `http://localhost:${app.port}/auth/callback`;
+  const postLogoutRedirectUri = `http://localhost:${app.port}`;
+
+  const created = await call<{
+    applicationId: string;
+    oidcConfiguration?: { clientId: string };
+  }>("zitadel.application.v2.ApplicationService/CreateApplication", {
+    projectId,
+    name: app.name,
+    oidcConfiguration: {
+      redirectUris: [redirectUri],
+      responseTypes: ["OIDC_RESPONSE_TYPE_CODE"],
+      grantTypes: ["OIDC_GRANT_TYPE_AUTHORIZATION_CODE", "OIDC_GRANT_TYPE_REFRESH_TOKEN"],
+      // Public client: browser-based Auth Code + PKCE, no client secret.
+      applicationType: "OIDC_APP_TYPE_USER_AGENT",
+      authMethodType: "OIDC_AUTH_METHOD_TYPE_NONE",
+      postLogoutRedirectUris: [postLogoutRedirectUri],
+      // Required for http://localhost redirect URIs (non-TLS) to be accepted.
+      developmentMode: true,
+    },
+  });
+  const clientId = created.oidcConfiguration?.clientId;
+  if (!clientId) {
+    throw new Error(`CreateApplication for "${app.name}" did not return a clientId`);
+  }
+  console.log(`[app] created "${app.name}" -> ${clientId}`);
+  return { key: app.key, name: app.name, port: app.port, clientId };
+}
+
+async function findOrCreateUser(call: Call, organizationId: string, user: TestUserSpec): Promise<string> {
+  const list = await call<{ result?: Array<{ userId: string; username: string }> }>(
+    "zitadel.user.v2.UserService/ListUsers",
+    {},
+  );
+  const existing = list.result?.find((u) => u.username === user.username);
+  if (existing) {
+    console.log(`[user] "${user.username}" already exists -> ${existing.userId}`);
+    return existing.userId;
+  }
+
+  const created = await call<{ id: string }>("zitadel.user.v2.UserService/CreateUser", {
+    organizationId,
+    username: user.username,
+    human: {
+      profile: { givenName: user.firstName, familyName: user.lastName },
+      email: { email: user.username, isVerified: true },
+      password: { password: user.password, changeRequired: false },
+    },
+  });
+  console.log(`[user] created "${user.username}" -> ${created.id}`);
+  return created.id;
+}
+
+async function ensureGrant(
+  call: Call,
+  organizationId: string,
+  projectId: string,
+  userId: string,
+  roleKey: string,
+): Promise<void> {
+  try {
+    await call("zitadel.authorization.v2.AuthorizationService/CreateAuthorization", {
+      userId,
+      projectId,
+      organizationId,
+      roleKeys: [roleKey],
+    });
+    console.log(`[grant] "${roleKey}" -> user ${userId}`);
+  } catch (err) {
+    if (isAlreadyExists(err)) {
+      console.log(`[grant] "${roleKey}" -> user ${userId} already exists (skipped)`);
+      return;
+    }
+    throw err;
+  }
+}
+
+async function fetchDiscovery(): Promise<{
+  issuer: string;
+  jwks_uri: string;
+  authorization_endpoint: string;
+  token_endpoint: string;
+  end_session_endpoint?: string;
+}> {
+  const res = await fetch(`${BASE_URL}/.well-known/openid-configuration`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch OIDC discovery document: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+function writeGeneratedEnv(apps: CreatedApp[], discovery: Awaited<ReturnType<typeof fetchDiscovery>>): void {
+  const lines: string[] = [];
+  lines.push("# Generated by seed.ts — do not edit by hand.");
+  lines.push(`# Regenerate with: node seed.ts (after docker compose up -d --wait)`);
+  lines.push("");
+  lines.push("This file is NOT wired into any app yet (see README.md). It documents the");
+  lines.push("env vars each app's local `.env.local` would need once that wiring happens.");
+  lines.push("");
+  for (const app of apps) {
+    lines.push(`## ${app.name}`);
+    lines.push("");
+    lines.push("```");
+    lines.push(`ZITADEL_ISSUER=${discovery.issuer}`);
+    lines.push(`ZITADEL_CLIENT_ID=${app.clientId}`);
+    lines.push(`ZITADEL_JWKS_URI=${discovery.jwks_uri}`);
+    lines.push(`ZITADEL_AUTHORIZATION_ENDPOINT=${discovery.authorization_endpoint}`);
+    lines.push(`ZITADEL_TOKEN_ENDPOINT=${discovery.token_endpoint}`);
+    lines.push(`ZITADEL_REDIRECT_URI=http://localhost:${app.port}/auth/callback`);
+    lines.push(`ZITADEL_POST_LOGOUT_REDIRECT_URI=http://localhost:${app.port}`);
+    lines.push("```");
+    lines.push("");
+  }
+  const outPath = join(__dirname, "generated-client-env.md");
+  writeFileSync(outPath, lines.join("\n"));
+  console.log(`[env] wrote ${outPath}`);
+}
+
+// --- Main ----------------------------------------------------------------
+
+async function main() {
+  console.log(`Seeding Zitadel at ${BASE_URL} ...`);
+  const pat = getPat();
+  const call = makeCaller(pat);
+
+  const organizationId = await findOrgId(call);
+  const projectId = await findOrCreateProject(call, organizationId);
+  await ensureRoles(call, projectId);
+
+  const apps: CreatedApp[] = [];
+  for (const app of APPS) {
+    apps.push(await findOrCreateApp(call, projectId, app));
+  }
+
+  for (const user of TEST_USERS) {
+    const userId = await findOrCreateUser(call, organizationId, user);
+    await ensureGrant(call, organizationId, projectId, userId, user.role);
+  }
+
+  const discovery = await fetchDiscovery();
+  writeGeneratedEnv(apps, discovery);
+
+  console.log("\nDone. Test users:");
+  for (const user of TEST_USERS) {
+    console.log(`  ${user.username} / ${user.password} (role: ${user.role})`);
+  }
+}
+
+main().catch((err) => {
+  console.error("\nSeed script failed:");
+  console.error(err instanceof Error ? err.stack ?? err.message : err);
+  process.exitCode = 1;
+});
