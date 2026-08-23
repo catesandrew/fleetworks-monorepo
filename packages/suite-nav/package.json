@@ -27,10 +27,12 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
-    "lint": "echo \"no lint configured yet\""
+    "lint": "echo \"no lint configured yet\"",
+    "test": "vitest run --project suite-nav"
   },
   "devDependencies": {
     "tsup": "^8.3.0",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "vitest": "^4.0.0"
   }
 }

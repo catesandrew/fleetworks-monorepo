@@ -1,5 +1,8 @@
 packages:
   - "packages/*"
 
+linkWorkspacePackages: true
+saveWorkspaceProtocol: false
+
 onlyBuiltDependencies:
   - esbuild

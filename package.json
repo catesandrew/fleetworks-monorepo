@@ -1,6 +1,7 @@
 {
   "name": "fleetworks-monorepo",
   "private": true,
+  "type": "module",
   "repository": {
     "type": "git",
     "url": "https://github.com/catesandrew/fleetworks-monorepo"
@@ -23,6 +24,7 @@
     "@changesets/cli": "^2.29.0",
     "@types/node": "^22.10.0",
     "turbo": "^2.5.0",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "vitest": "^4.0.0"
   }
 }
