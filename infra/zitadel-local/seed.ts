@@ -252,6 +252,9 @@ async function findOrCreateApp(call: Call, projectId: string, app: AppSpec): Pro
       postLogoutRedirectUris: [postLogoutRedirectUri],
       // Required for http://localhost redirect URIs (non-TLS) to be accepted.
       developmentMode: true,
+      // Zitadel defaults to opaque access tokens; every app's packages/auth
+      // verifies via jose's jwtVerify(), which requires an actual JWT.
+      accessTokenType: "OIDC_TOKEN_TYPE_JWT",
     },
   });
   const clientId = created.oidcConfiguration?.clientId;
