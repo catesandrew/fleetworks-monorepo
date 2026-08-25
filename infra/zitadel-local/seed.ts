@@ -40,7 +40,15 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const BASE_URL = process.env.ZITADEL_BASE_URL ?? "http://localhost:8080";
+try {
+  process.loadEnvFile(join(__dirname, ".env"));
+} catch {
+  // .env optional — ZITADEL_BASE_URL/etc. can still come from the shell env.
+}
+
+const BASE_URL =
+  process.env.ZITADEL_BASE_URL ??
+  `http://${process.env.ZITADEL_DOMAIN ?? "localhost"}:${process.env.PROXY_HTTP_PUBLISHED_PORT ?? "8080"}`;
 const ORG_NAME = process.env.FLEETWORKS_ORG_NAME ?? "Fleetworks";
 const PROJECT_NAME = "Fleetworks Suite";
 const COMPOSE_SERVICE = "zitadel-api";
@@ -55,15 +63,33 @@ interface AppSpec {
   key: string;
   name: string;
   port: number;
+  // Overrides below default to the port-derived http://localhost:<port>
+  // shape used by the 5 browser-based web apps. A native app (a custom URI
+  // scheme, no port) needs both set explicitly.
+  redirectUri?: string;
+  postLogoutRedirectUri?: string;
+  applicationType?: "OIDC_APP_TYPE_USER_AGENT" | "OIDC_APP_TYPE_NATIVE";
 }
 
-// One client per app — deliberate: NOT one shared client across all 5.
+// One client per app — deliberate: NOT one shared client across all 5 web
+// apps, and not shared with the mobile client below either.
 const APPS: AppSpec[] = [
   { key: "helmsman", name: "Helmsman", port: 3025 },
   { key: "chorus", name: "Chorus", port: 3021 },
   { key: "warden", name: "Warden", port: 3020 },
   { key: "rolodex", name: "Rolodex", port: 3013 },
   { key: "yellow-pages", name: "Yellow Pages", port: 3023 },
+  {
+    key: "rolodex-mobile",
+    name: "Rolodex Mobile",
+    port: 0, // unused — native client, no localhost port; redirectUri below is authoritative.
+    // Matches apps/mobile's real makeRedirectUri({ path: 'auth/callback' })
+    // output with scheme 'rolodex' — pinned exactly by
+    // apps/mobile/src/lib/__tests__/fleetworks-oauth.test.ts's own mock.
+    redirectUri: "rolodex://auth/callback",
+    postLogoutRedirectUri: "rolodex://",
+    applicationType: "OIDC_APP_TYPE_NATIVE",
+  },
 ];
 
 interface TestUserSpec {
@@ -215,9 +241,15 @@ interface CreatedApp {
   name: string;
   port: number;
   clientId: string;
+  redirectUri: string;
+  postLogoutRedirectUri: string;
 }
 
 async function findOrCreateApp(call: Call, projectId: string, app: AppSpec): Promise<CreatedApp> {
+  const redirectUri = app.redirectUri ?? `http://localhost:${app.port}/auth/callback`;
+  const postLogoutRedirectUri = app.postLogoutRedirectUri ?? `http://localhost:${app.port}`;
+  const applicationType = app.applicationType ?? "OIDC_APP_TYPE_USER_AGENT";
+
   const list = await call<{
     applications?: Array<{
       applicationId: string;
@@ -230,11 +262,15 @@ async function findOrCreateApp(call: Call, projectId: string, app: AppSpec): Pro
   const existing = list.applications?.find((a) => a.name === app.name);
   if (existing?.oidcConfiguration?.clientId) {
     console.log(`[app] "${app.name}" already exists -> ${existing.oidcConfiguration.clientId}`);
-    return { key: app.key, name: app.name, port: app.port, clientId: existing.oidcConfiguration.clientId };
+    return {
+      key: app.key,
+      name: app.name,
+      port: app.port,
+      clientId: existing.oidcConfiguration.clientId,
+      redirectUri,
+      postLogoutRedirectUri,
+    };
   }
-
-  const redirectUri = `http://localhost:${app.port}/auth/callback`;
-  const postLogoutRedirectUri = `http://localhost:${app.port}`;
 
   const created = await call<{
     applicationId: string;
@@ -246,11 +282,14 @@ async function findOrCreateApp(call: Call, projectId: string, app: AppSpec): Pro
       redirectUris: [redirectUri],
       responseTypes: ["OIDC_RESPONSE_TYPE_CODE"],
       grantTypes: ["OIDC_GRANT_TYPE_AUTHORIZATION_CODE", "OIDC_GRANT_TYPE_REFRESH_TOKEN"],
-      // Public client: browser-based Auth Code + PKCE, no client secret.
-      applicationType: "OIDC_APP_TYPE_USER_AGENT",
+      // Public client, no client secret — browser Auth Code+PKCE
+      // (USER_AGENT) for the 5 web apps, native Auth Code+PKCE (NATIVE,
+      // custom URI scheme) for the mobile app.
+      applicationType,
       authMethodType: "OIDC_AUTH_METHOD_TYPE_NONE",
       postLogoutRedirectUris: [postLogoutRedirectUri],
-      // Required for http://localhost redirect URIs (non-TLS) to be accepted.
+      // Required for http://localhost redirect URIs (non-TLS) to be
+      // accepted; harmless for the mobile app's custom-scheme URI.
       developmentMode: true,
       // Zitadel defaults to opaque access tokens; every app's packages/auth
       // verifies via jose's jwtVerify(), which requires an actual JWT.
@@ -262,7 +301,7 @@ async function findOrCreateApp(call: Call, projectId: string, app: AppSpec): Pro
     throw new Error(`CreateApplication for "${app.name}" did not return a clientId`);
   }
   console.log(`[app] created "${app.name}" -> ${clientId}`);
-  return { key: app.key, name: app.name, port: app.port, clientId };
+  return { key: app.key, name: app.name, port: app.port, clientId, redirectUri, postLogoutRedirectUri };
 }
 
 async function findOrCreateUser(call: Call, organizationId: string, user: TestUserSpec): Promise<string> {
@@ -344,8 +383,8 @@ function writeGeneratedEnv(apps: CreatedApp[], discovery: Awaited<ReturnType<typ
     lines.push(`ZITADEL_JWKS_URI=${discovery.jwks_uri}`);
     lines.push(`ZITADEL_AUTHORIZATION_ENDPOINT=${discovery.authorization_endpoint}`);
     lines.push(`ZITADEL_TOKEN_ENDPOINT=${discovery.token_endpoint}`);
-    lines.push(`ZITADEL_REDIRECT_URI=http://localhost:${app.port}/auth/callback`);
-    lines.push(`ZITADEL_POST_LOGOUT_REDIRECT_URI=http://localhost:${app.port}`);
+    lines.push(`ZITADEL_REDIRECT_URI=${app.redirectUri}`);
+    lines.push(`ZITADEL_POST_LOGOUT_REDIRECT_URI=${app.postLogoutRedirectUri}`);
     lines.push("```");
     lines.push("");
   }
