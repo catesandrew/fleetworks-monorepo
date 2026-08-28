@@ -68,17 +68,40 @@ interface AppSpec {
   // scheme, no port) needs both set explicitly.
   redirectUri?: string;
   postLogoutRedirectUri?: string;
-  applicationType?: "OIDC_APP_TYPE_USER_AGENT" | "OIDC_APP_TYPE_NATIVE";
+  applicationType?: "OIDC_APP_TYPE_USER_AGENT" | "OIDC_APP_TYPE_WEB" | "OIDC_APP_TYPE_NATIVE";
 }
 
 // One client per app — deliberate: NOT one shared client across all 5 web
 // apps, and not shared with the mobile client below either.
 const APPS: AppSpec[] = [
   { key: "helmsman", name: "Helmsman", port: 3025 },
-  { key: "chorus", name: "Chorus", port: 3021 },
+  {
+    key: "chorus",
+    name: "Chorus",
+    port: 3021,
+    // WEB, not the USER_AGENT default — same reason as yellow-pages below.
+    // chorus' Phase 4 cutover runs the code exchange server-side in Node
+    // (chorus/apps/web/src/app/auth/callback/route.ts is a route handler, not
+    // browser JS, and the plan's Decision 3 ports yellow-pages' BFF session
+    // subsystem, keeping the exchange there), matching production's
+    // zitadel_application_oidc.chorus_web in fleetworks-web/infra/zitadel.tf.
+    applicationType: "OIDC_APP_TYPE_WEB",
+  },
   { key: "warden", name: "Warden", port: 3020 },
   { key: "rolodex", name: "Rolodex", port: 3013 },
-  { key: "yellow-pages", name: "Yellow Pages", port: 3023 },
+  {
+    key: "yellow-pages",
+    name: "Yellow Pages",
+    port: 3023,
+    // WEB, not the USER_AGENT default the other web apps take: yellow-pages'
+    // Phase 4 cutover runs the code exchange server-side in Node
+    // (yellow-pages/apps/web/src/app/auth/callback/route.ts is a route
+    // handler, not browser JS), matching production's
+    // zitadel_application_oidc.yellow_pages_web in
+    // fleetworks-web/infra/zitadel.tf. Kept in step deliberately — the
+    // WEB-vs-USER_AGENT axis was a real caught bug in rolodex's own plan.
+    applicationType: "OIDC_APP_TYPE_WEB",
+  },
   {
     key: "rolodex-mobile",
     name: "Rolodex Mobile",
