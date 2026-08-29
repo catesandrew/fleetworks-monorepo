@@ -87,7 +87,19 @@ const APPS: AppSpec[] = [
     // zitadel_application_oidc.chorus_web in fleetworks-web/infra/zitadel.tf.
     applicationType: "OIDC_APP_TYPE_WEB",
   },
-  { key: "warden", name: "Warden", port: 3020 },
+  {
+    key: "warden",
+    name: "Warden",
+    port: 3020,
+    // WEB, not the USER_AGENT default — same reason as chorus above and
+    // yellow-pages below. warden's Phase 4 cutover runs the code exchange
+    // server-side in Node (warden/apps/web/src/app/auth/callback/route.ts is a
+    // route handler, not browser JS), matching the
+    // zitadel_application_oidc.warden_web that Phase 4's Terraform step will
+    // register in fleetworks-web/infra/zitadel.tf. Still a public client
+    // (authMethodType NONE below) — direct Auth Code + PKCE, no client secret.
+    applicationType: "OIDC_APP_TYPE_WEB",
+  },
   { key: "rolodex", name: "Rolodex", port: 3013 },
   {
     key: "yellow-pages",
@@ -136,6 +148,24 @@ const TEST_USERS: TestUserSpec[] = [
     firstName: "Test",
     lastName: "Member",
     password: "TestMember1!",
+    role: "member",
+  },
+  {
+    // A THIRD generic fleet-wide identity, added for apps whose RBAC ladder has
+    // three rungs rather than two: helmsman's `permissions.spec.ts` /
+    // `settings.spec.ts` drive org:admin, org:contributor AND org:viewer in the
+    // same run, and two seeded accounts cannot express three roles.
+    //
+    // Deliberately NOT app-branded (no `viewer@helmsman.local`): every existing
+    // account here is fleet-generic and reusable by any app, and the per-app
+    // role mapping lives in each app's own DEV_SEED_ACCOUNTS, not in this file.
+    // The Zitadel `role` below is "member" because this instance only models
+    // two Zitadel-level roles — an app's third rung is its own org_members
+    // role, which Zitadel neither knows nor needs to know.
+    username: "test-viewer@fleetworks.dev",
+    firstName: "Test",
+    lastName: "Viewer",
+    password: "TestViewer1!",
     role: "member",
   },
 ];

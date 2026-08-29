@@ -112,6 +112,12 @@ exact role set matches.
 | ---------------------------- | -------------- | -------- |
 | `test-admin@fleetworks.dev`  | `TestAdmin1!`  | `admin`  |
 | `test-member@fleetworks.dev` | `TestMember1!` | `member` |
+| `test-viewer@fleetworks.dev` | `TestViewer1!` | `member` |
+
+The third account exists for apps whose own RBAC ladder has three rungs (e.g.
+helmsman's `org:admin` / `org:contributor` / `org:viewer`); its Zitadel role is
+`member` because this instance only models two. Each app maps these usernames
+onto its own roles in its `DEV_SEED_ACCOUNTS`.
 
 **Local dev use only.** These are throwaway credentials seeded into a
 disposable local instance — never real secrets, never used anywhere but this
