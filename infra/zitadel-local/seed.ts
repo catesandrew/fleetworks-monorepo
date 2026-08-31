@@ -125,6 +125,16 @@ const APPS: AppSpec[] = [
     postLogoutRedirectUri: "rolodex://",
     applicationType: "OIDC_APP_TYPE_NATIVE",
   },
+  {
+    key: "helmsman-mobile",
+    name: "Helmsman Mobile",
+    port: 0, // unused — native client, no localhost port; redirectUri below is authoritative.
+    // Matches apps/mobile's makeRedirectUri({ path: 'auth/callback' }) output
+    // with scheme 'helmsman' (helmsman/apps/mobile/app.config.ts:10).
+    redirectUri: "helmsman://auth/callback",
+    postLogoutRedirectUri: "helmsman://",
+    applicationType: "OIDC_APP_TYPE_NATIVE",
+  },
 ];
 
 interface TestUserSpec {
