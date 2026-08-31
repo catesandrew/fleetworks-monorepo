@@ -135,6 +135,16 @@ const APPS: AppSpec[] = [
     postLogoutRedirectUri: "helmsman://",
     applicationType: "OIDC_APP_TYPE_NATIVE",
   },
+  {
+    key: "chorus-mobile",
+    name: "Chorus Mobile",
+    port: 0, // unused — native client, no localhost port; redirectUri below is authoritative.
+    // Matches apps/mobile's makeRedirectUri({ path: 'auth/callback' }) output
+    // with scheme 'chorus' (chorus/apps/mobile/app.json:8).
+    redirectUri: "chorus://auth/callback",
+    postLogoutRedirectUri: "chorus://",
+    applicationType: "OIDC_APP_TYPE_NATIVE",
+  },
 ];
 
 interface TestUserSpec {
