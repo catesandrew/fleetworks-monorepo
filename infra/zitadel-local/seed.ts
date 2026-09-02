@@ -145,6 +145,16 @@ const APPS: AppSpec[] = [
     postLogoutRedirectUri: "chorus://",
     applicationType: "OIDC_APP_TYPE_NATIVE",
   },
+  {
+    key: "yellow-pages-mobile",
+    name: "Yellow Pages Mobile",
+    port: 0, // unused — native client, no localhost port; redirectUri below is authoritative.
+    // Matches apps/mobile's makeRedirectUri({ path: 'auth/callback' }) output
+    // with scheme 'yellowpages' (yellow-pages/apps/mobile/app.config.js:11).
+    redirectUri: "yellowpages://auth/callback",
+    postLogoutRedirectUri: "yellowpages://",
+    applicationType: "OIDC_APP_TYPE_NATIVE",
+  },
 ];
 
 interface TestUserSpec {
